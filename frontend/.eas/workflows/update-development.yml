@@ -1,0 +1,30 @@
+# OTA-only lane: publish a JS bundle to the `development` channel. No native
+# build — the binary already on the device picks up the update on next launch.
+# Triggered by `dev/*` tags (e.g. dev/1.0.0). The `dev-native/*` lane is a
+# distinct prefix and is handled by release-development.yml.
+name: Update development (OTA)
+
+on:
+  push:
+    tags: ['dev/*']
+
+jobs:
+  test:
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      # package.json's "test" is `jest --watchAll`, which never exits. The
+      # trailing flags override it: --watchAll=false makes it a one-shot run,
+      # --passWithNoTests keeps the lane green before any test files exist.
+      - name: Run unit tests
+        run: npm test -- --watchAll=false --ci --passWithNoTests
+  update:
+    needs: [test]
+    type: update
+    # Injects the `development` EAS environment's variables at config-eval time,
+    # so app.config.ts resolves on EAS infra instead of throwing on a runner
+    # with no .env. This is the whole reason for the migration.
+    environment: development
+    params:
+      channel: development
+      message: ${{ github.ref_name }}

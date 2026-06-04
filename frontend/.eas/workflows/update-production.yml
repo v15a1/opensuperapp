@@ -1,0 +1,23 @@
+# OTA-only lane: publish a JS bundle to the `production` channel. No native
+# build. Triggered by `release/*` tags (e.g. release/1.0.0). The
+# `release-native/*` lane is a distinct prefix, handled by release-production.yml.
+name: Update production (OTA)
+
+on:
+  push:
+    tags: ['release/*']
+
+jobs:
+  test:
+    steps:
+      - uses: eas/checkout
+      - uses: eas/install_node_modules
+      - name: Run unit tests
+        run: npm test -- --watchAll=false --ci --passWithNoTests
+  update:
+    needs: [test]
+    type: update
+    environment: production
+    params:
+      channel: production
+      message: ${{ github.ref_name }}

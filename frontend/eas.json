@@ -8,11 +8,13 @@
       "developmentClient": true,
       "distribution": "internal",
       "channel": "development",
+      "environment": "development",
       "env": { "EAS_BUILD_PROFILE": "development"}
     },
     "production": {
       "autoIncrement": true,
       "channel": "production",
+      "environment": "production",
       "env": { "EAS_BUILD_PROFILE": "production" }
     }
   },
