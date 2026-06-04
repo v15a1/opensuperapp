@@ -1,0 +1,160 @@
+# Release pipeline — EAS Build (native binaries) + EAS Update (OTA bundle).
+#
+# Triggered by pushing a `release/*` git tag (or via "Run workflow"). The tag
+# itself decides which EAS channel we ship to — nothing about the channel is
+# hardcoded below; it's derived in the determine-channel job:
+#
+#   Tag shape                       Channel
+#   -----------------------------   -----------
+#   release/<v>-dev*                development   e.g. release/1.0.0-dev
+#   release/<v>.dev.*               development   e.g. release/1.0.0.dev.1
+#   release/<v>   (anything else)   production    e.g. release/1.0.0
+#
+# Chain: test -> determine-channel -> eas-build-and-update.
+#
+# MONOREPO NOTE: this is a monorepo and the Expo app lives in `frontend/`.
+# GitHub only loads workflows from the repo-root `.github/workflows/`, so this
+# file lives at the root while every app step runs in `frontend` via the
+# `defaults.run.working-directory` below. A copy placed under
+# `frontend/.github/workflows/` would never be picked up.
+
+name: release
+
+on:
+  push:
+    tags:
+      - 'release/*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to release (e.g. release/1.0.0)'
+        required: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: frontend
+
+jobs:
+  # Job 1 — run the test suite. Gates everything downstream.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          # package.json engines requires Node >= 20.19.0.
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      # package.json defines "test": "jest --watchAll", which never exits and
+      # would hang CI forever. We are not allowed to edit package.json, so we
+      # pass CI-safe flags at call time — the trailing --watchAll=false wins
+      # over the script's --watchAll. --passWithNoTests keeps a green build if
+      # no test files match yet.
+      - name: Run tests
+        run: npm test -- --watchAll=false --ci --passWithNoTests
+
+  # Job 2 — parse the tag once and expose the routing decision to job 3.
+  # No channel name is hardcoded anywhere downstream; it all comes from here.
+  determine-channel:
+    needs: test
+    runs-on: ubuntu-latest
+    outputs:
+      channel: ${{ steps.vars.outputs.channel }}
+      runtime_version: ${{ steps.vars.outputs.runtime_version }}
+      message: ${{ steps.vars.outputs.message }}
+    steps:
+      - name: Parse tag into channel + runtime version
+        id: vars
+        # On a tag push the tag is in github.ref_name. A manual dispatch has no
+        # pushed ref, so fall back to the `tag` input the operator typed.
+        env:
+          TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          echo "Routing tag: $TAG"
+
+          # Channel routing: a -dev suffix (release/1.0.0-dev) or a .dev.
+          # segment (release/1.0.0.dev.1) means the development channel.
+          # Every other release/* tag ships to production.
+          if [[ "$TAG" == release/*-dev* || "$TAG" == release/*.dev.* ]]; then
+            channel=development
+          else
+            channel=production
+          fi
+
+          # Runtime version: app.config.ts uses the "appVersion" runtimeVersion
+          # policy, so the runtime version tracks the app's semver. Derive it
+          # from the tag by stripping the release/ prefix and any dev marker —
+          # e.g. release/1.0.0-dev -> 1.0.0, release/1.0.0.dev.1 -> 1.0.0.
+          # This output is informational (EAS itself resolves the runtime
+          # version from the appVersion policy at build time); it documents
+          # which version a run targeted.
+          version="${TAG#release/}"
+          version="${version%%-dev*}"
+          version="${version%%.dev.*}"
+
+          {
+            echo "channel=$channel"
+            echo "runtime_version=$version"
+            echo "message=$TAG"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Resolved channel=$channel runtime_version=$version"
+
+  # Job 3 — build native binaries for both platforms, then publish the OTA
+  # bundle to the same channel. The eas.json build profiles are named
+  # identically to the channels (development, production), so --profile reuses
+  # the channel value directly.
+  eas-build-and-update:
+    needs: determine-channel
+    runs-on: ubuntu-latest
+    # Job-level token so both the expo-github-action setup and the eas CLI
+    # calls authenticate against EAS.
+    env:
+      EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20.x'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - uses: expo/expo-github-action@v8
+        with:
+          expo-version: latest
+          eas-version: latest
+          token: ${{ secrets.EXPO_TOKEN }}
+
+      # The .env values the app needs at build time (EAS_PROJECT_ID, APP_OWNER,
+      # APP_VERSION, etc.) are stored as EAS secrets and injected by EAS on its
+      # cloud build servers — they are NOT GitHub secrets for this step. See the
+      # setup checklist / `eas secret:create`.
+      - name: Build native binaries (iOS + Android)
+        run: |
+          eas build --profile ${{ needs.determine-channel.outputs.channel }} \
+            --platform all \
+            --non-interactive
+
+      # OTA publish runs on THIS runner, where app.config.ts is evaluated
+      # locally (unlike the cloud build above). EAS-stored secrets are not
+      # available here, so the two config values app.config.ts reads at
+      # eval time — EAS_PROJECT_ID (updates.url) and APP_OWNER (extra.owner) —
+      # must be provided as GitHub secrets for this step. APP_VERSION comes
+      # from the tag. This is the one place the "EAS secrets, not GitHub
+      # secrets" rule cannot hold: a local `eas update` has no EAS secret
+      # injection.
+      - name: Publish OTA update
+        env:
+          EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
+          APP_OWNER: ${{ secrets.APP_OWNER }}
+          APP_VERSION: ${{ needs.determine-channel.outputs.runtime_version }}
+        run: |
+          eas update --channel ${{ needs.determine-channel.outputs.channel }} \
+            --message "${{ needs.determine-channel.outputs.message }}" \
+            --non-interactive
