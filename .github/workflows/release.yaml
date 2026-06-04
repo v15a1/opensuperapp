@@ -58,7 +58,7 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       # --legacy-peer-deps: lucide-react-native@0.468.0 declares peer react
       # ^16-18 but the project uses react@19. Flag bypasses strict resolution.
-      - run: npm ci --legacy-peer-deps
+      - run: npm ci
       # package.json defines "test": "jest --watchAll", which never exits and
       # would hang CI. We don't modify package.json; instead we pass CI-safe
       # flags at call time — the later --watchAll=false wins.
