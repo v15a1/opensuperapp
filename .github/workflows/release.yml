@@ -65,7 +65,6 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       channel: ${{ steps.vars.outputs.channel }}
-      runtime_version: ${{ steps.vars.outputs.runtime_version }}
       message: ${{ steps.vars.outputs.message }}
     steps:
       - name: Parse tag into channel + runtime version
@@ -87,20 +86,17 @@ jobs:
             channel=production
           fi
 
-          # Runtime version: app.config.ts uses the "appVersion" runtimeVersion
-          # policy, so the runtime version tracks the app's semver. Derive it
-          # from the tag by stripping the release/ prefix and any dev marker —
-          # e.g. release/1.0.0-dev -> 1.0.0, release/1.0.0.dev.1 -> 1.0.0.
-          # This output is informational (EAS itself resolves the runtime
-          # version from the appVersion policy at build time); it documents
-          # which version a run targeted.
+          # Version (for the log line only). eas.json uses appVersionSource:
+          # "remote", so EAS resolves the runtime version (appVersion policy)
+          # from its servers for both the build and the OTA publish — we don't
+          # feed a version in. Derived here purely so the run shows which
+          # version the tag targeted: release/1.0.0-dev -> 1.0.0.
           version="${TAG#release/}"
           version="${version%%-dev*}"
           version="${version%%.dev.*}"
 
           {
             echo "channel=$channel"
-            echo "runtime_version=$version"
             echo "message=$TAG"
           } >> "$GITHUB_OUTPUT"
 
@@ -145,15 +141,20 @@ jobs:
       # locally (unlike the cloud build above). EAS-stored secrets are not
       # available here, so the two config values app.config.ts reads at
       # eval time — EAS_PROJECT_ID (updates.url) and APP_OWNER (extra.owner) —
-      # must be provided as GitHub secrets for this step. APP_VERSION comes
-      # from the tag. This is the one place the "EAS secrets, not GitHub
-      # secrets" rule cannot hold: a local `eas update` has no EAS secret
-      # injection.
+      # must be provided as GitHub secrets for this step. This is the one place
+      # the "EAS secrets, not GitHub secrets" rule cannot hold: a local
+      # `eas update` has no EAS secret injection.
+      #
+      # APP_VERSION is deliberately NOT set here. eas.json uses
+      # appVersionSource: "remote", so the runtime version (runtimeVersion
+      # policy "appVersion") is resolved from EAS's servers, not the local
+      # version field — same source the cloud build uses. Forcing a local
+      # APP_VERSION would risk the OTA targeting a different runtime version
+      # than the binary and silently never reaching it.
       - name: Publish OTA update
         env:
           EAS_PROJECT_ID: ${{ secrets.EAS_PROJECT_ID }}
           APP_OWNER: ${{ secrets.APP_OWNER }}
-          APP_VERSION: ${{ needs.determine-channel.outputs.runtime_version }}
         run: |
           eas update --channel ${{ needs.determine-channel.outputs.channel }} \
             --message "${{ needs.determine-channel.outputs.message }}" \
