@@ -33,14 +33,16 @@ on:
 permissions:
   contents: read
 
-defaults:
-  run:
-    working-directory: frontend
-
 jobs:
   # Job 1 — run the test suite. Gates everything downstream.
   test:
     runs-on: ubuntu-latest
+    # The app lives in frontend/; run every step there. Scoped per-job rather
+    # than globally so determine-channel (which checks out nothing) doesn't try
+    # to cd into a frontend/ dir that was never created on its runner.
+    defaults:
+      run:
+        working-directory: frontend
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -109,6 +111,9 @@ jobs:
   eas-build-and-update:
     needs: determine-channel
     runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
     # Job-level token so both the expo-github-action setup and the eas CLI
     # calls authenticate against EAS.
     env:
